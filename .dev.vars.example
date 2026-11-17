@@ -1,0 +1,7 @@
+# Generate a unique value with: openssl rand -base64 32
+BETTER_AUTH_SECRET=
+# Optional Google login. Redirect URI: http://localhost:5173/api/auth/callback/google
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+# Optional AI provider credential (never prefix these with VITE_).
+AI_API_KEY=

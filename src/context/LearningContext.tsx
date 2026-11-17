@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { BADGE_DEFINITIONS } from '../data/badges';
 import { ENGLISH_LESSONS, ENGLISH_MODULES } from '../data/englishCurriculum';
 import { INITIAL_VOCAB_ITEMS } from '../data/initialVocab';
@@ -14,10 +14,12 @@ import {
   UserState,
   VocabItem,
 } from '../types';
+import { ProgressSync } from '../services/progressSync';
+import { sanitizeProgress } from '../../shared/progress';
+import type { AuthUserSession } from '../utils/auth';
 import { getTodayISO } from '../utils/date';
 import { gradeVocabItem, SRSRating } from '../utils/srs';
 
-const STORAGE_KEY = 'manabi_learning_platform_v1';
 
 const MODULE_TITLE_MAP = new Map(
   [...ENGLISH_MODULES, ...JAPANESE_MODULES].map((m) => [m.id, m.title])
@@ -83,7 +85,7 @@ function buildDefaultDailyTasks(dateStr: string): DailyTask[] {
   ];
 }
 
-function createInitialState(): UserState {
+export function createInitialState(): UserState {
   const today = getTodayISO();
   return {
     xp: 0,
@@ -157,40 +159,26 @@ function createInitialState(): UserState {
   };
 }
 
-function loadState(): UserState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return createInitialState();
-    const parsed = JSON.parse(raw) as UserState;
-    const base = createInitialState();
-    const today = getTodayISO();
-    const hasTodayTasks = parsed.dailyTasks?.some((t) => t.date === today);
-
-    // Merge any newly expanded curriculum vocabulary without overwriting user's SRS history
-    const existingIds = new Set((parsed.vocabItems || []).map((v) => v.id));
-    const mergedVocab = [
-      ...(parsed.vocabItems || []),
-      ...INITIAL_VOCAB_ITEMS.filter((v) => !existingIds.has(v.id)),
-    ];
-    const mergedLists = Array.from(
-      new Set([...(parsed.customVocabLists || []), ...base.customVocabLists])
-    );
-
-    return {
-      ...base,
-      ...parsed,
-      vocabItems: mergedVocab,
-      customVocabLists: mergedLists,
-      dailyTasks: hasTodayTasks
-        ? parsed.dailyTasks
-        : [...(parsed.dailyTasks || []).slice(-10), ...buildDefaultDailyTasks(today)],
-    };
-  } catch {
-    return createInitialState();
-  }
+export function hydrateLearningState(parsed: UserState): UserState {
+  const base = createInitialState();
+  const today = getTodayISO();
+  const existingIds = new Set(parsed.vocabItems.map(item => item.id));
+  return {
+    ...parsed,
+    vocabItems: [...parsed.vocabItems, ...INITIAL_VOCAB_ITEMS.filter(item => !existingIds.has(item.id))],
+    customVocabLists: Array.from(new Set([...parsed.customVocabLists, ...base.customVocabLists])),
+    dailyTasks: parsed.dailyTasks.some(task => task.date === today)
+      ? parsed.dailyTasks : [...parsed.dailyTasks.slice(-10), ...buildDefaultDailyTasks(today)],
+  };
 }
 
 interface LearningContextValue {
+  sync: ReturnType<ProgressSync['getSnapshot']>;
+  retrySync: () => Promise<void>;
+  reloadRemoteProgress: () => Promise<void>;
+  flushProgress: () => Promise<void>;
+  hasLegacyProgress: boolean;
+  importLegacyProgress: () => boolean;
   state: UserState;
   todayISO: string;
   todayXP: number;
@@ -247,17 +235,28 @@ interface LearningContextValue {
 
 const LearningContext = createContext<LearningContextValue | null>(null);
 
-export const LearningProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [state, setState] = useState<UserState>(loadState);
+export const LearningProvider: React.FC<{ children: React.ReactNode; session: AuthUserSession; onLogout: () => void }> = ({ children, session, onLogout }) => {
+  const [controller] = useState(() => new ProgressSync(session, () => {
+    const initial = createInitialState();
+    initial.settings.userName = session.name;
+    return initial;
+  }, hydrateLearningState));
+  const sync = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  const state = sync.state;
+  const setState = controller.update;
   const todayISO = getTodayISO();
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {
-      // ignore storage quota errors
-    }
-  }, [state]);
+    void controller.start();
+    const resume = () => { void controller.retry(); };
+    window.addEventListener('online', resume);
+    window.addEventListener('focus', resume);
+    return () => {
+      controller.stop();
+      window.removeEventListener('online', resume);
+      window.removeEventListener('focus', resume);
+    };
+  }, [controller]);
 
   const applyActivityAndBadges = (draft: UserState, xpDelta: number, lang: Language | 'vocab', minutes: number, quizCorrect = 0, quizTotal = 0): { next: UserState; newlyUnlocked: string[] } => {
     const today = getTodayISO();
@@ -555,7 +554,7 @@ export const LearningProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         ...prev.dailyTasks,
         {
           ...task,
-          id: `task-custom-${Date.now()}`,
+          id: `task-custom-${crypto.randomUUID()}`,
           date: getTodayISO(),
           completed: false,
         },
@@ -603,7 +602,7 @@ export const LearningProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       vocabItems: [
         {
           ...item,
-          id: `vocab-${Date.now()}`,
+          id: `vocab-${crypto.randomUUID()}`,
           srsState: 'new',
           easeFactor: 2.5,
           intervalDays: 0,
@@ -678,7 +677,7 @@ export const LearningProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         notes: [
           {
             ...note,
-            id: `note-${Date.now()}`,
+            id: `note-${crypto.randomUUID()}`,
             updatedAt: Date.now(),
           },
           ...prev.notes,
@@ -695,7 +694,7 @@ export const LearningProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setState((prev) => {
       const fullAttempt: AssessmentAttempt = {
         ...attempt,
-        id: `assess-${Date.now()}`,
+        id: `assess-${crypto.randomUUID()}`,
         takenAt: Date.now(),
       };
       const pct = attempt.maxScore > 0 ? Math.round((attempt.score / attempt.maxScore) * 100) : 0;
@@ -717,14 +716,12 @@ export const LearningProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const resetAllProgress = () => {
     const fresh = createInitialState();
     setState(fresh);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
   };
 
   const importProgressJSON = (json: string): boolean => {
     try {
-      const parsed = JSON.parse(json) as UserState;
-      if (!parsed || typeof parsed.xp !== 'number' || !Array.isArray(parsed.vocabItems)) return false;
-      setState(parsed);
+      const parsed = sanitizeProgress(JSON.parse(json));
+      setState(hydrateLearningState(parsed));
       return true;
     } catch {
       return false;
@@ -805,6 +802,12 @@ export const LearningProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const value = useMemo<LearningContextValue>(
     () => ({
+      sync,
+      retrySync: controller.retry,
+      reloadRemoteProgress: controller.reloadRemote,
+      flushProgress: controller.flush,
+      hasLegacyProgress: controller.hasLegacy(),
+      importLegacyProgress: controller.importLegacy,
       state,
       todayISO,
       todayXP,
@@ -834,10 +837,19 @@ export const LearningProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       importProgressJSON,
       getLanguageStats,
     }),
-    [state, todayISO]
+    [state, todayISO, sync]
   );
 
-  return <LearningContext.Provider value={value}>{children}</LearningContext.Provider>;
+  return <LearningContext.Provider value={value}>
+    {sync.ready ? children : <div className="min-h-screen flex items-center justify-center p-6 bg-[#F6F6F4]">
+      <div className="max-w-md space-y-4 rounded-2xl bg-white p-6" role="status">
+        <h1 className="text-xl font-bold">{sync.status === 'loading' ? 'Đang tải tiến độ học…' : 'Chưa tải được tiến độ'}</h1>
+        <p>{sync.error || 'Vui lòng đợi để tiếp tục học.'}</p>
+        {sync.status === 'error' && <button className="rounded-full bg-black text-white px-4 py-2" onClick={() => void controller.retry()}>Thử lại</button>}
+        <button className="ml-3 underline" onClick={onLogout}>Đăng xuất</button>
+      </div>
+    </div>}
+  </LearningContext.Provider>;
 };
 
 export function useLearning(): LearningContextValue {

@@ -1,3 +1,4 @@
+import { apiRequest } from '../services/api';
 import { AIConfig, Language } from '../types';
 
 export interface AIMessage {
@@ -14,76 +15,19 @@ export async function askLanguageAssistant(
   userLevelLabel: string,
   aiConfig: AIConfig
 ): Promise<{ reply: string; modeUsed: 'live_api' | 'local_demo'; errorNote?: string }> {
-  // If user explicitly configured a live API key & endpoint
-  if (aiConfig.provider !== 'demo' && aiConfig.apiKey.trim()) {
+  if (aiConfig.provider !== 'demo') {
     try {
-      if (aiConfig.provider === 'openai_compatible') {
-        const endpoint = aiConfig.endpoint.trim() || 'https://api.openai.com/v1/chat/completions';
-        const systemPrompt =
-          lang === 'en'
-            ? `Bạn là trợ lý học tiếng Anh chuyên nghiệp giải thích bằng tiếng Việt cho học viên trình độ ${userLevelLabel} hướng tới B2. Hãy sửa lỗi, giải thích ngắn gọn, đưa 1-2 cách diễn đạt tự nhiên hơn chuẩn B2.`
-            : `Bạn là trợ lý học tiếng Nhật thân thiện giải thích bằng tiếng Việt cho học viên trình độ ${userLevelLabel} hướng tới JLPT N5. Luôn kèm Hiragana, Romaji và nghĩa tiếng Việt.`;
-
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${aiConfig.apiKey.trim()}`,
-          },
-          body: JSON.stringify({
-            model: aiConfig.model.trim() || 'gpt-4o-mini',
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: prompt },
-            ],
-            temperature: 0.5,
-          }),
-        });
-
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-        const data = await res.json();
-        const text = data?.choices?.[0]?.message?.content;
-        if (text) {
-          return { reply: text, modeUsed: 'live_api' };
-        }
-      } else if (aiConfig.provider === 'gemini') {
-        const model = aiConfig.model.trim() || 'gemini-2.0-flash';
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
-          aiConfig.apiKey.trim()
-        )}`;
-        const sys =
-          lang === 'en'
-            ? `Trợ lý học tiếng Anh (giải thích tiếng Việt, trình độ học viên ${userLevelLabel} → B2): `
-            : `Trợ lý học tiếng Nhật (giải thích tiếng Việt, trình độ học viên ${userLevelLabel} → N5, luôn kèm Hiragana/Romaji): `;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: sys + prompt }] }],
-          }),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) return { reply: text, modeUsed: 'live_api' };
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Lỗi kết nối API';
+      return await apiRequest<{ reply: string; modeUsed: 'live_api' }>('/api/ai/tutor', {
+        method: 'POST', body: JSON.stringify({ language: lang, prompt, level: userLevelLabel }),
+      });
+    } catch (error) {
       return {
-        reply: generateSmartDemoResponse(lang, prompt, userLevelLabel),
-        modeUsed: 'local_demo',
-        errorNote: `Không gọi được API ngoài (${msg}), đã chuyển sang chế độ phân tích mẫu cục bộ.`,
+        reply: generateSmartDemoResponse(lang, prompt, userLevelLabel), modeUsed: 'local_demo',
+        errorNote: error instanceof Error ? error.message : 'Không kết nối được AI. Đang hiển thị phản hồi mẫu.',
       };
     }
   }
-
-  // Honest Local Demo Mode
-  return {
-    reply: generateSmartDemoResponse(lang, prompt, userLevelLabel),
-    modeUsed: 'local_demo',
-  };
+  return { reply: generateSmartDemoResponse(lang, prompt, userLevelLabel), modeUsed: 'local_demo' };
 }
 
 function generateSmartDemoResponse(lang: Language, rawInput: string, levelLabel: string): string {
@@ -133,7 +77,7 @@ function generateSmartDemoResponse(lang: Language, rawInput: string, levelLabel:
     return [
       `📘 **Trợ lý Tiếng Anh (Demo cục bộ • Mục tiêu ${levelLabel} → B2)**`,
       ...notes,
-      `\n_Lưu ý: Đây là phản hồi mẫu phân tích quy tắc cục bộ. Bạn có thể nhập API Key (OpenAI/Gemini) trong **Cài đặt** để chat AI trực tiếp cho mọi câu bất kỳ._`,
+      `\n_Lưu ý: Đây là phản hồi mẫu phân tích quy tắc cục bộ. Bạn có thể bật chế độ AI trực tiếp trong **Cài đặt** khi dịch vụ đã sẵn sàng._`,
     ].join('\n\n');
   }
 
@@ -169,6 +113,6 @@ function generateSmartDemoResponse(lang: Language, rawInput: string, levelLabel:
   return [
     `🌸 **Trợ lý Tiếng Nhật (Demo cục bộ • Mục tiêu ${levelLabel} → N5)**`,
     ...jpNotes,
-    `\n_Lưu ý: Đây là phản hồi mẫu phân tích quy tắc cục bộ. Để AI sửa mọi câu tự do theo thời gian thực, hãy cấu hình API Key trong mục **Cài đặt**._`,
+    `\n_Lưu ý: Đây là phản hồi mẫu phân tích quy tắc cục bộ. Để AI sửa mọi câu tự do theo thời gian thực, hãy bật chế độ AI trực tiếp trong mục **Cài đặt** khi dịch vụ đã sẵn sàng._`,
   ].join('\n\n');
 }

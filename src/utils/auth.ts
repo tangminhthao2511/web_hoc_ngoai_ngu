@@ -1,4 +1,5 @@
-import { Language } from '../types';
+import type { Language } from '../types';
+import { apiRequest } from '../services/api';
 
 export interface AuthUserSession {
   userId: string;
@@ -8,201 +9,59 @@ export interface AuthUserSession {
   isGuest?: boolean;
   loggedInAt: string;
 }
+interface AuthResponse { user: { id: string; name: string; email: string; preferredLanguage?: string } }
+const GUEST_KEY = 'manabi_guest_session_v2';
 
-interface StoredAccount {
-  userId: string;
-  name: string;
-  email: string;
-  password: string;
-  preferredLanguage: Language;
-  createdAt: string;
+function toSession(data: AuthResponse): AuthUserSession {
+  return { userId: data.user.id, name: data.user.name, email: data.user.email,
+    preferredLanguage: data.user.preferredLanguage === 'jp' ? 'jp' : 'en', isGuest: false, loggedInAt: new Date().toISOString() };
 }
 
-const ACCOUNTS_KEY = 'manabi_accounts_v1';
-const SESSION_KEY = 'manabi_auth_session_v1';
-
-export const DEMO_ACCOUNT_CREDENTIALS = {
-  email: 'hocvien@manabi.edu.vn',
-  password: 'Manabi123!',
-  name: 'Minh Thảo',
-};
-
-const TEMP_SEEDED_ACCOUNTS: StoredAccount[] = [
-  {
-    userId: 'demo-user-1',
-    name: DEMO_ACCOUNT_CREDENTIALS.name,
-    email: DEMO_ACCOUNT_CREDENTIALS.email,
-    password: DEMO_ACCOUNT_CREDENTIALS.password,
-    preferredLanguage: 'en',
-    createdAt: '2026-11-14T00:00:00.000Z',
-  },
-  {
-    userId: 'user-thao-temp',
-    name: 'Thảo',
-    email: 'Thảo',
-    password: '12345679',
-    preferredLanguage: 'en',
-    createdAt: '2026-11-14T00:00:00.000Z',
-  },
-];
-
-function readAccounts(): StoredAccount[] {
+export async function getAuthSession(): Promise<AuthUserSession | null> {
+  // Legacy local sessions and plaintext accounts have no authority on the server.
+  localStorage.removeItem('manabi_accounts_v1');
+  localStorage.removeItem('manabi_auth_session_v1');
+  sessionStorage.removeItem('manabi_auth_session_v1');
+  const result = await apiRequest<AuthResponse | null>('/api/auth/get-session');
+  if (result?.user) return toSession(result);
   try {
-    const raw = localStorage.getItem(ACCOUNTS_KEY);
-    const parsed: StoredAccount[] = raw ? JSON.parse(raw) : [];
-    const missingSeeds = TEMP_SEEDED_ACCOUNTS.filter(
-      (seed) =>
-        !parsed.some(
-          (a) =>
-            a.userId === seed.userId ||
-            a.email.normalize('NFC').toLowerCase() === seed.email.normalize('NFC').toLowerCase()
-        )
-    );
-    if (missingSeeds.length > 0) {
-      const merged = [...missingSeeds, ...parsed];
-      localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(merged));
-      return merged;
-    }
-    return parsed;
-  } catch {
-    return TEMP_SEEDED_ACCOUNTS;
-  }
+    const guest = JSON.parse(sessionStorage.getItem(GUEST_KEY) || 'null');
+    return guest?.isGuest && guest.userId === 'guest-local' ? guest : null;
+  } catch { return null; }
 }
 
-function saveAccounts(accounts: StoredAccount[]): void {
+export async function loginWithEmail(params: { email: string; password: string; remember: boolean }) {
   try {
-    localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
-  } catch {
-    // Ignore storage quota errors
-  }
+    const data = await apiRequest<AuthResponse>('/api/auth/sign-in/email', { method: 'POST', body: JSON.stringify({
+      email: params.email.trim(), password: params.password, rememberMe: params.remember,
+    }) });
+    sessionStorage.removeItem(GUEST_KEY);
+    return { ok: true as const, session: toSession(data) };
+  } catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : 'Không đăng nhập được.' }; }
 }
 
-export function getAuthSession(): AuthUserSession | null {
+export async function registerAccount(params: { name: string; email: string; password: string; preferredLanguage: Language }) {
   try {
-    const raw = localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function persistSession(session: AuthUserSession, remember: boolean): void {
-  try {
-    const serialized = JSON.stringify(session);
-    if (remember) {
-      localStorage.setItem(SESSION_KEY, serialized);
-      sessionStorage.removeItem(SESSION_KEY);
-    } else {
-      sessionStorage.setItem(SESSION_KEY, serialized);
-      localStorage.removeItem(SESSION_KEY);
-    }
-  } catch {
-    // Ignore storage quota errors
-  }
-}
-
-export function loginWithEmail(params: {
-  email: string;
-  password: string;
-  remember: boolean;
-}): { ok: true; session: AuthUserSession } | { ok: false; error: string } {
-  const identifier = params.email.trim().normalize('NFC').toLowerCase();
-  const password = params.password;
-
-  if (!identifier || !password) {
-    return { ok: false, error: 'Vui lòng nhập đầy đủ tên đăng nhập / email và mật khẩu.' };
-  }
-
-  const accounts = readAccounts();
-  const match = accounts.find(
-    (a) =>
-      a.email.normalize('NFC').toLowerCase() === identifier ||
-      a.name.normalize('NFC').toLowerCase() === identifier
-  );
-  if (!match) {
-    return { ok: false, error: 'Không tìm thấy tài khoản phù hợp.' };
-  }
-  if (match.password !== password) {
-    return { ok: false, error: 'Mật khẩu chưa đúng. Vui lòng thử lại.' };
-  }
-
-  const session: AuthUserSession = {
-    userId: match.userId,
-    name: match.name,
-    email: match.email,
-    preferredLanguage: match.preferredLanguage,
-    isGuest: false,
-    loggedInAt: new Date().toISOString(),
-  };
-  persistSession(session, params.remember);
-  return { ok: true, session };
-}
-
-export function registerAccount(params: {
-  name: string;
-  email: string;
-  password: string;
-  preferredLanguage: Language;
-}): { ok: true; session: AuthUserSession } | { ok: false; error: string } {
-  const name = params.name.trim();
-  const email = params.email.trim().toLowerCase();
-  const password = params.password;
-
-  if (name.length < 2) {
-    return { ok: false, error: 'Tên hiển thị cần ít nhất 2 ký tự.' };
-  }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return { ok: false, error: 'Email chưa đúng định dạng.' };
-  }
-  if (password.length < 6) {
-    return { ok: false, error: 'Mật khẩu cần tối thiểu 6 ký tự.' };
-  }
-
-  const accounts = readAccounts();
-  if (accounts.some((a) => a.email.toLowerCase() === email)) {
-    return { ok: false, error: 'Email này đã được đăng ký. Hãy chuyển sang tab Đăng nhập.' };
-  }
-
-  const newAccount: StoredAccount = {
-    userId: `user-${Date.now()}`,
-    name,
-    email,
-    password,
-    preferredLanguage: params.preferredLanguage,
-    createdAt: new Date().toISOString(),
-  };
-  saveAccounts([...accounts, newAccount]);
-
-  const session: AuthUserSession = {
-    userId: newAccount.userId,
-    name: newAccount.name,
-    email: newAccount.email,
-    preferredLanguage: newAccount.preferredLanguage,
-    isGuest: false,
-    loggedInAt: new Date().toISOString(),
-  };
-  persistSession(session, true);
-  return { ok: true, session };
+    const data = await apiRequest<AuthResponse>('/api/auth/sign-up/email', { method: 'POST', body: JSON.stringify({
+      ...params, name: params.name.trim(), email: params.email.trim(),
+    }) });
+    sessionStorage.removeItem(GUEST_KEY);
+    return { ok: true as const, session: toSession(data) };
+  } catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : 'Không đăng ký được.' }; }
 }
 
 export function loginAsGuest(preferredLanguage: Language): AuthUserSession {
-  const session: AuthUserSession = {
-    userId: 'guest-local',
-    name: 'Học viên Khách',
-    email: 'guest@local',
-    preferredLanguage,
-    isGuest: true,
-    loggedInAt: new Date().toISOString(),
-  };
-  persistSession(session, true);
+  const session = { userId: 'guest-local', name: 'Học viên Khách', email: 'guest@local', preferredLanguage, isGuest: true, loggedInAt: new Date().toISOString() };
+  sessionStorage.setItem(GUEST_KEY, JSON.stringify(session));
   return session;
 }
 
-export function logoutAuthSession(): void {
-  try {
-    localStorage.removeItem(SESSION_KEY);
-    sessionStorage.removeItem(SESSION_KEY);
-  } catch {
-    // Ignore storage errors
-  }
+export async function logoutAuthSession(isGuest = false): Promise<void> {
+  if (!isGuest) await apiRequest('/api/auth/sign-out', { method: 'POST', body: '{}' });
+  sessionStorage.removeItem(GUEST_KEY);
+}
+
+export async function loginWithGoogle() {
+  const data = await apiRequest<{ url: string }>('/api/auth/sign-in/social', { method: 'POST', body: JSON.stringify({ provider: 'google', callbackURL: window.location.origin, disableRedirect: true }) });
+  window.location.assign(data.url);
 }

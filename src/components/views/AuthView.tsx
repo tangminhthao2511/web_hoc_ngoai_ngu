@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ArrowRight,
   AudioLines,
@@ -18,7 +18,9 @@ import {
   loginAsGuest,
   loginWithEmail,
   registerAccount,
+  loginWithGoogle,
 } from '../../utils/auth';
+import { apiRequest } from '../../services/api';
 import { MascotAvatar } from '../common/MascotAvatar';
 
 interface Props {
@@ -35,37 +37,27 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated }) => {
   const [remember, setRemember] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [googleLogin, setGoogleLogin] = useState(false);
+  useEffect(() => { void apiRequest<{ googleLogin: boolean }>('/api/config').then(config => setGoogleLogin(config.googleLogin)).catch(() => {}); }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
 
-    if (mode === 'login') {
-      const res = loginWithEmail({ email, password, remember });
-      if (!res.ok) {
-        setErrorMsg(res.error);
-        return;
-      }
-      onAuthenticated(res.session);
-      return;
-    }
-
-    if (password !== confirmPassword) {
+    if (busy) return;
+    if (mode === 'register' && password !== confirmPassword) {
       setErrorMsg('Mật khẩu xác nhận chưa khớp.');
       return;
     }
-
-    const res = registerAccount({
-      name,
-      email,
-      password,
-      preferredLanguage: preferredLang,
-    });
-    if (!res.ok) {
-      setErrorMsg(res.error);
-      return;
-    }
-    onAuthenticated(res.session);
+    setBusy(true);
+    try {
+      const res = mode === 'login'
+        ? await loginWithEmail({ email, password, remember })
+        : await registerAccount({ name, email, password, preferredLanguage: preferredLang });
+      if (!res.ok) { setErrorMsg(res.error); return; }
+      onAuthenticated(res.session);
+    } finally { setBusy(false); }
   };
 
   const handleGuestLogin = () => {
@@ -221,7 +213,7 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated }) => {
 
                 <div className="space-y-1.5">
                   <label className="block text-xs font-extrabold text-[#08090D]">
-                    {mode === 'login' ? 'Email hoặc tên đăng nhập' : 'Email'}
+                    Email
                   </label>
                   <div className="flex items-center gap-2.5 rounded-2xl border border-black/12 bg-[#F6F6F4] px-3.5 py-2.5 focus-within:border-[#08090D] focus-within:bg-white transition">
                     {mode === 'login' ? (
@@ -230,10 +222,10 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated }) => {
                       <Mail className="h-4 w-4 text-black/45 shrink-0" />
                     )}
                     <input
-                      type={mode === 'login' ? 'text' : 'email'}
+                      type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder={mode === 'login' ? 'Nhập email hoặc tên đăng nhập' : 'name@example.com'}
+                      placeholder="name@example.com"
                       className="w-full bg-transparent text-sm font-medium text-[#08090D] outline-none"
                       required
                     />
@@ -248,7 +240,7 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated }) => {
                       type={showPassword ? 'text' : 'password'}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      placeholder={mode === 'register' ? 'Tối thiểu 6 ký tự' : 'Nhập mật khẩu'}
+                      placeholder={mode === 'register' ? 'Tối thiểu 8 ký tự' : 'Nhập mật khẩu'}
                       className="w-full bg-transparent text-sm font-medium text-[#08090D] outline-none"
                       required
                     />
@@ -330,22 +322,28 @@ export const AuthView: React.FC<Props> = ({ onAuthenticated }) => {
 
                 <button
                   type="submit"
+                  disabled={busy}
                   className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-[#08090D] px-6 py-3 text-sm font-extrabold text-white hover:opacity-90 transition shadow-sm"
                 >
-                  <span>{mode === 'login' ? 'Đăng nhập vào học ngay' : 'Hoàn tất đăng ký'}</span>
+                  <span>{busy ? 'Đang xử lý…' : mode === 'login' ? 'Đăng nhập vào học ngay' : 'Hoàn tất đăng ký'}</span>
                   <ArrowRight className="h-4 w-4" />
                 </button>
               </form>
+              {googleLogin && <button type="button" disabled={busy} className="mt-3 w-full rounded-full border border-black/20 px-4 py-3 font-bold" onClick={async () => {
+                setBusy(true);
+                try { await loginWithGoogle(); } catch { setErrorMsg('Không đăng nhập được bằng Google.'); setBusy(false); }
+              }}>Tiếp tục với Google</button>}
             </div>
 
             {/* Footer Guest Mode */}
             <div className="mt-6 border-t border-black/8 pt-4 flex flex-wrap items-center justify-between gap-2 text-xs">
               <span className="text-black/55 inline-flex items-center gap-1.5">
-                <BookOpen className="h-3.5 w-3.5" /> Dữ liệu học tập được lưu cục bộ an toàn.
+                <BookOpen className="h-3.5 w-3.5" /> Đăng nhập để đồng bộ tiến độ giữa các thiết bị.
               </span>
               <button
                 type="button"
                 onClick={handleGuestLogin}
+                disabled={busy}
                 className="font-extrabold text-[#08090D] underline underline-offset-2 hover:text-[#1A4F73]"
               >
                 Vào học thử không cần tài khoản →

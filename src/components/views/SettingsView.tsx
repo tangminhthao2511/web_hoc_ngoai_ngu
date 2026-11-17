@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { CheckCircle2, Download, Lock, RotateCcw, Settings as SettingsIcon, Unlock, Upload } from 'lucide-react';
+import { apiRequest } from '../../services/api';
 import { useLearning } from '../../context/LearningContext';
 
 export const SettingsView: React.FC = () => {
@@ -18,9 +19,8 @@ export const SettingsView: React.FC = () => {
   }, [state.settings.unlockAllPreview]);
 
   const [provider, setProvider] = useState(state.settings.aiConfig.provider);
-  const [apiKey, setApiKey] = useState(state.settings.aiConfig.apiKey);
-  const [model, setModel] = useState(state.settings.aiConfig.model);
-  const [endpoint, setEndpoint] = useState(state.settings.aiConfig.endpoint);
+  const [aiEnabled, setAiEnabled] = useState(false);
+  useEffect(() => { void apiRequest<{ aiEnabled: boolean }>('/api/config').then(config => setAiEnabled(config.aiEnabled)).catch(() => {}); }, []);
 
   const [savedToast, setSavedToast] = useState(false);
   const [importStatus, setImportStatus] = useState<string>('');
@@ -38,9 +38,7 @@ export const SettingsView: React.FC = () => {
       unlockAllPreview: unlockPreview,
       aiConfig: {
         provider,
-        apiKey,
-        model,
-        endpoint,
+        apiKey: '', model: '', endpoint: '',
       },
     });
     setSavedToast(true);
@@ -48,7 +46,7 @@ export const SettingsView: React.FC = () => {
   };
 
   const handleExport = () => {
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ ...state, settings: { ...state.settings, aiConfig: { ...state.settings.aiConfig, apiKey: '' } } }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -60,6 +58,7 @@ export const SettingsView: React.FC = () => {
   const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!window.confirm('Thay tiến độ hiện tại bằng file backup này? Hãy xuất backup trước nếu cần giữ dữ liệu hiện tại.')) return;
     const reader = new FileReader();
     reader.onload = () => {
       const ok = importProgressJSON(String(reader.result || ''));
@@ -205,67 +204,15 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Optional AI API Configuration */}
         <div className="space-y-4 rounded-2xl bg-[#F6F6F4] p-5">
-          <div>
-            <h2 className="text-sm font-extrabold uppercase tracking-wider text-black/60">
-              2. Tích hợp Trợ lý AI (Tùy chọn)
-            </h2>
-            <p className="mt-0.5 text-xs text-black/60">
-              Mặc định ứng dụng chạy chế độ Demo cục bộ miễn phí. Nếu muốn chat AI trực tiếp, bạn có thể điền API Key
-              cá nhân (chỉ lưu trong trình duyệt của bạn).
-            </p>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="block text-xs font-bold mb-1">Chế độ AI</label>
-              <select
-                value={provider}
-                onChange={(e) => setProvider(e.target.value as any)}
-                className="w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-bold"
-              >
-                <option value="demo">Demo cục bộ (Không cần Key)</option>
-                <option value="gemini">Google Gemini API</option>
-                <option value="openai_compatible">OpenAI-compatible API</option>
-              </select>
-            </div>
-            {provider !== 'demo' && (
-              <>
-                <div>
-                  <label className="block text-xs font-bold mb-1">API Key</label>
-                  <input
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="Nhập API Key..."
-                    className="w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-xs outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold mb-1">Model</label>
-                  <input
-                    type="text"
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    placeholder={provider === 'gemini' ? 'gemini-2.0-flash' : 'gpt-4o-mini'}
-                    className="w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-xs outline-none"
-                  />
-                </div>
-                {provider === 'openai_compatible' && (
-                  <div>
-                    <label className="block text-xs font-bold mb-1">Endpoint URL</label>
-                    <input
-                      type="text"
-                      value={endpoint}
-                      onChange={(e) => setEndpoint(e.target.value)}
-                      placeholder="https://api.openai.com/v1/chat/completions"
-                      className="w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-xs outline-none"
-                    />
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+          <h2 className="text-sm font-extrabold uppercase tracking-wider text-black/60">2. Trợ lý AI</h2>
+          <p className="text-xs text-black/60">{aiEnabled
+            ? 'AI trực tiếp hỗ trợ tối đa 30 câu hỏi mỗi ngày cho mỗi tài khoản. Chế độ demo hoạt động miễn phí trên thiết bị.'
+            : 'AI trực tiếp chưa được bật. Bạn vẫn có thể sử dụng phản hồi demo miễn phí.'}</p>
+          <select value={provider === 'demo' ? 'demo' : 'openai_compatible'} onChange={event => setProvider(event.target.value as 'demo' | 'openai_compatible')} className="w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm">
+            <option value="demo">Demo cục bộ</option>
+            <option value="openai_compatible" disabled={!aiEnabled}>AI trực tiếp</option>
+          </select>
         </div>
 
         <div className="flex justify-end">
@@ -280,7 +227,7 @@ export const SettingsView: React.FC = () => {
 
       {/* Backup & Reset */}
       <div className="rounded-[26px] border border-black/10 bg-white p-5 sm:p-6 shadow-soft space-y-4">
-        <h2 className="text-base font-extrabold text-[#08090D]">Sao lưu & Khôi phục dữ liệu trình duyệt</h2>
+        <h2 className="text-base font-extrabold text-[#08090D]">Sao lưu & Khôi phục tiến độ</h2>
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
